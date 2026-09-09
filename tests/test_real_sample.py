@@ -79,3 +79,72 @@ def test_parse_real():
     assert "🟢" in card
     assert "Netflix" in card
     assert "ChatGPT" in card
+
+
+def test_parse_chinese_colons_and_pipes():
+    """测试带有中文全角冒号及终端仪表盘管道符（如 |低风险）的样本解析"""
+    sample = """
+一、基础信息（Maxmind 数据库）
+自治系统号：         AS4760
+组织：               HKT Limited
+使用地：             [HK] 香港, [AS] 亚洲
+IP类型：             原生IP
+二、IP类型属性
+使用类型:   家宽        家宽          家宽         家宽          家宽
+三、风险评分
+IP2Location：  0|低风险
+Scamalytics：  0|低风险
+ipapi：        0.17%|低风险
+AbuseIPDB：    0|低风险
+五、流媒体及AI服务解锁检测
+服务商： TikTok   Disney+  Netflix Youtube  AmazonPV  Reddit   ChatGPT
+状态：    解锁     解锁     解锁    解锁    解锁      解锁     仅APP
+地区：  [ALISG]    [HK]     [HK]    [HK]    [HK]      [HK]     [HK]
+方式：    原生     原生     原生    原生    原生      原生     原生
+六、邮局连通性及黑名单检测
+本地25端口出站：阻断
+通信：远端25端口不可达
+IP地址黑名单数据库：  有效 423   正常 416   已标记 6   黑名单 1
+"""
+    runner = IPQualityRunner()
+    d = runner._parse_output(sample, fallback_ip="203.218.34.193")
+    assert d["scamalytics_score"] == "0"
+    assert d["scamalytics_level"] == "低风险"
+    assert d["abuseipdb_score"] == "0"
+    assert d["abuseipdb_level"] == "低风险"
+    assert "解锁 [HK] (原生)" in d["netflix"]
+    assert "仅APP [HK] (原生)" in d["chatgpt"]
+    assert "解锁 [ALISG] (原生)" in d["tiktok"]
+
+    card = runner._format_telegram_card(d)
+    # 确保没有出现 (|低风险) 这种未清理的管道符
+    assert "(|低风险)" not in card
+    assert "0 (低风险)" in card
+    # 确保流媒体不再是未解析的整行
+    assert "Youtube  AmazonPV" not in card
+    assert "• Netflix: 🟢 解锁 [HK] (原生)" in card
+    assert "• ChatGPT: 🟡 仅APP [HK] (原生)" in card
+
+
+def test_json_overlay():
+    """测试脚本生成的结构化 JSON 补全机制"""
+    json_data = {
+        "Head": {"IP": "203.218.34.193"},
+        "Info": {"Type": "原生IP"},
+        "Type": {"Usage": {"IPinfo": "家宽", "ipregistry": "家宽", "ipapi": "家宽", "AbuseIPDB": "家宽", "IP2LOCATION": "家宽"}},
+        "Score": {"SCAMALYTICS": "0", "AbuseIPDB": "0", "IP2LOCATION": "0", "ipapi": "0.17%"},
+        "Media": {
+            "Netflix": {"Status": "解锁", "Region": "HK", "Type": "原生"},
+            "ChatGPT": {"Status": "仅APP", "Region": "HK", "Type": "原生"},
+            "TikTok": {"Status": "解锁", "Region": "ALISG", "Type": "原生"},
+        },
+        "Mail": {"Port25": False, "DNSBlacklist": {"Clean": 416, "Blacklisted": 1}}
+    }
+    runner = IPQualityRunner()
+    d = runner._parse_output("", fallback_ip="1.1.1.1", json_dict=json_data)
+    assert d["ip"] == "203.218.34.193"
+    assert d["scamalytics_score"] == "0"
+    assert "5/5 数据库判定家宽" in d["residential_details"]
+    assert "解锁 [HK] (原生)" in d["netflix"]
+    assert "仅APP [HK] (原生)" in d["chatgpt"]
+    assert d["port25"] == "阻断"

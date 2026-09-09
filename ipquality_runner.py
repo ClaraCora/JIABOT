@@ -66,15 +66,16 @@ class IPQualityRunner:
                 if is_windows:
                     # Windows 环境下（本地开发/测试），提供逼真的 Mock 测试数据
                     raw_output = await self._run_mock_windows(current_ip)
+                    json_data = None
                 else:
                     # Linux VPS 环境下执行真实脚本
-                    raw_output = await self._run_linux_script()
+                    raw_output, json_data = await self._run_linux_script()
 
                 elapsed_seconds = int(time.time() - start_time)
                 clean_text = clean_ansi(raw_output)
 
-                # 解析结构化信息
-                parsed_data = self._parse_output(clean_text, current_ip)
+                # 解析结构化信息 (结合文本解析与 JSON 结构化数据互补)
+                parsed_data = self._parse_output(clean_text, current_ip, json_dict=json_data)
                 parsed_data["duration_seconds"] = elapsed_seconds
                 parsed_data["test_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -120,10 +121,11 @@ class IPQualityRunner:
             finally:
                 self.is_running = False
 
-    async def _run_linux_script(self) -> str:
-        """在 Linux VPS 上执行 xykt/IPQuality 脚本"""
-        # 使用 -4 仅测试 IPv4，-f 展示完整 IP，-y 自动安装依赖，-p 隐私模式不上传公共链接
-        cmd = f"bash -c 'curl -sL {settings.ipquality_script_url} | bash -s -- -4 -f -y -p'"
+    async def _run_linux_script(self) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """在 Linux VPS 上执行 xykt/IPQuality 脚本并读取结构化 JSON 输出"""
+        # 使用 -4 仅测试 IPv4，-f 展示完整 IP，-y 自动安装依赖，-p 隐私模式不上传公共链接，-o 导出完整 JSON
+        json_tmp_path = "/tmp/ipquality_result.json"
+        cmd = f"bash -c 'rm -f {json_tmp_path} && curl -sL {settings.ipquality_script_url} | bash -s -- -4 -f -y -p -o {json_tmp_path}'"
         logger.info(f"执行命令: {cmd}")
 
         proc = await asyncio.create_subprocess_shell(
@@ -138,7 +140,19 @@ class IPQualityRunner:
         )
 
         output = stdout.decode("utf-8", errors="replace")
-        return output
+
+        json_data = None
+        if os.path.exists(json_tmp_path):
+            try:
+                with open(json_tmp_path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        json_data = json.loads(content)
+                        logger.info(f"成功读取 {json_tmp_path} 结构化 JSON 数据")
+            except Exception as e:
+                logger.warning(f"读取 {json_tmp_path} 异常: {e}")
+
+        return output, json_data
 
     async def _run_mock_windows(self, current_ip: Optional[str]) -> str:
         """Windows 开发调试模拟测试输出"""
@@ -193,8 +207,13 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
 ========================================================================
 """
 
-    def _parse_output(self, text: str, fallback_ip: Optional[str] = None) -> Dict[str, Any]:
-        """按大章节划分精准解析 xykt/IPQuality 各项指标"""
+    def _parse_output(
+        self,
+        text: str,
+        fallback_ip: Optional[str] = None,
+        json_dict: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """按大章节划分精准解析 xykt/IPQuality 各项指标，并支持结合 JSON 结构化数据补全"""
         data: Dict[str, Any] = {
             "ip": fallback_ip or "未知",
             "asn": "未知",
@@ -246,7 +265,7 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
                 cur_sec = "3"
             elif any(k in l for k in ["四、风险因子", "4. 风险因子", "4. Risk Factors"]):
                 cur_sec = "4"
-            elif any(k in l for k in ["五、流媒体", "3. 流媒体", "5. 流媒体", "5. Media Unlock"]):
+            elif any(k in l for k in ["五、流媒体", "3. 流媒体", "5. 流媒体", "5. Media Unlock", "5. Accessibility"]):
                 cur_sec = "5"
             elif any(k in l for k in ["六、邮局", "4. 邮件", "6. 邮局", "6. Mail"]):
                 cur_sec = "6"
@@ -293,22 +312,22 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
             m = re.search(r"Scamalytics.*?[：:\s]\s*([0-9.]+)\s*([^\n]*)", l, re.I)
             if m:
                 data["scamalytics_score"] = m.group(1).strip()
-                data["scamalytics_level"] = m.group(2).strip()
+                data["scamalytics_level"] = re.sub(r"^[|\s]+", "", m.group(2)).strip()
 
             m = re.search(r"AbuseIPDB.*?[：:\s]\s*([0-9.]+%?)\s*([^\n]*)", l, re.I)
             if m:
                 data["abuseipdb_score"] = m.group(1).strip()
-                data["abuseipdb_level"] = m.group(2).strip()
+                data["abuseipdb_level"] = re.sub(r"^[|\s]+", "", m.group(2)).strip()
 
             m = re.search(r"IP2Location.*?[：:\s]\s*([0-9.]+|[\u4e00-\u9fa5A-Za-z]+)\s*([^\n]*)", l, re.I)
             if m:
                 data["ip2location_score"] = m.group(1).strip()
-                data["ip2location_level"] = m.group(2).strip()
+                data["ip2location_level"] = re.sub(r"^[|\s]+", "", m.group(2)).strip()
 
             m = re.search(r"ipapi.*?[：:\s]\s*([0-9.]+%?)\s*([^\n]*)", l, re.I)
             if m:
                 data["ipapi_score"] = m.group(1).strip()
-                data["ipapi_level"] = m.group(2).strip()
+                data["ipapi_level"] = re.sub(r"^[|\s]+", "", m.group(2)).strip()
 
         # 风险评分全文本兜底扫描
         if data["scamalytics_score"] == "未知":
@@ -316,35 +335,47 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
                 m = re.search(r"Scamalytics.*?[：:\s]\s*([0-9.]+)\s*([^\n]*)", l, re.I)
                 if m:
                     data["scamalytics_score"] = m.group(1).strip()
-                    data["scamalytics_level"] = m.group(2).strip()
+                    data["scamalytics_level"] = re.sub(r"^[|\s]+", "", m.group(2)).strip()
                     break
         if data["abuseipdb_score"] == "未知":
             for l in text.splitlines():
                 m = re.search(r"AbuseIPDB.*?[：:\s]\s*([0-9.]+%?)\s*([^\n]*)", l, re.I)
                 if m:
                     data["abuseipdb_score"] = m.group(1).strip()
-                    data["abuseipdb_level"] = m.group(2).strip()
+                    data["abuseipdb_level"] = re.sub(r"^[|\s]+", "", m.group(2)).strip()
                     break
 
         # 6. 解析第五章节：流媒体及AI服务解锁
         sec5 = sec_map.get("5", [])
         services, statuses, regions, methods = [], [], [], []
         for l in sec5:
-            if "服务商:" in l:
-                services = l.split("服务商:", 1)[1].strip().split()
-            elif "状态:" in l:
-                statuses = l.split("状态:", 1)[1].strip().split()
-            elif "地区:" in l:
-                regions = l.split("地区:", 1)[1].strip().split()
-            elif "方式:" in l:
-                methods = l.split("方式:", 1)[1].strip().split()
+            if re.search(r"(?:服务商|Service)[:：]", l):
+                services = re.split(r"(?:服务商|Service)[:：]\s*", l, maxsplit=1)[1].strip().split()
+            elif re.search(r"(?:状态|Status)[:：]", l):
+                statuses = re.split(r"(?:状态|Status)[:：]\s*", l, maxsplit=1)[1].strip().split()
+            elif re.search(r"(?:地区|Region)[:：]", l):
+                regions = re.split(r"(?:地区|Region)[:：]\s*", l, maxsplit=1)[1].strip().split()
+            elif re.search(r"(?:方式|Type)[:：]", l):
+                methods = re.split(r"(?:方式|Type)[:：]\s*", l, maxsplit=1)[1].strip().split()
+
+        # 若在第 5 章节未提取到服务商（可能章节未对齐或脚本格式调整），扫描全部文本行
+        if not services:
+            for l in text.splitlines():
+                if re.search(r"(?:服务商|Service)[:：]", l) and not services:
+                    services = re.split(r"(?:服务商|Service)[:：]\s*", l, maxsplit=1)[1].strip().split()
+                elif re.search(r"(?:状态|Status)[:：]", l) and not statuses:
+                    statuses = re.split(r"(?:状态|Status)[:：]\s*", l, maxsplit=1)[1].strip().split()
+                elif re.search(r"(?:地区|Region)[:：]", l) and not regions:
+                    regions = re.split(r"(?:地区|Region)[:：]\s*", l, maxsplit=1)[1].strip().split()
+                elif re.search(r"(?:方式|Type)[:：]", l) and not methods:
+                    methods = re.split(r"(?:方式|Type)[:：]\s*", l, maxsplit=1)[1].strip().split()
 
         if services:
             for i, svc_name in enumerate(services):
                 st = statuses[i] if i < len(statuses) else ""
                 rg = regions[i] if i < len(regions) else ""
                 mt = methods[i] if i < len(methods) else ""
-                display_str = f"{st} {rg} ({mt})".strip().replace("()", "")
+                display_str = f"{st} {rg} ({mt})".strip().replace("()", "").strip()
                 data["media_unlock"][svc_name.lower()] = display_str
 
                 k = svc_name.lower()
@@ -363,22 +394,22 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
                 elif "reddit" in k:
                     data["reddit"] = display_str
         else:
-            # 兼容旧版本单行格式 (如 Netflix: 解锁)
+            # 兼容单行键值对格式 (如 Netflix: 解锁，要求必须有冒号，避免把表头当成值)
             for line_s in text.splitlines():
-                if "netflix" in line_s.lower():
-                    m = re.search(r"Netflix[:：\s]+([^\n]+)", line_s, re.I)
+                if re.search(r"Netflix.*?[:：]", line_s, re.I):
+                    m = re.search(r"Netflix.*?[:：]\s*([^\n]+)", line_s, re.I)
                     if m: data["netflix"] = m.group(1).strip()
-                if "disney" in line_s.lower():
-                    m = re.search(r"Disney\+?[:：\s]+([^\n]+)", line_s, re.I)
+                if re.search(r"Disney\+?.*?[:：]", line_s, re.I):
+                    m = re.search(r"Disney\+?.*?[:：]\s*([^\n]+)", line_s, re.I)
                     if m: data["disney"] = m.group(1).strip()
-                if "youtube" in line_s.lower():
-                    m = re.search(r"YouTube.*?[:：\s]+([^\n]+)", line_s, re.I)
+                if re.search(r"YouTube.*?[:：]", line_s, re.I):
+                    m = re.search(r"YouTube.*?[:：]\s*([^\n]+)", line_s, re.I)
                     if m: data["youtube"] = m.group(1).strip()
-                if "chatgpt" in line_s.lower() or "openai" in line_s.lower():
-                    m = re.search(r"(?:ChatGPT|OpenAI)[:：\s]+([^\n]+)", line_s, re.I)
+                if re.search(r"(?:ChatGPT|OpenAI).*?[:：]", line_s, re.I):
+                    m = re.search(r"(?:ChatGPT|OpenAI).*?[:：]\s*([^\n]+)", line_s, re.I)
                     if m: data["chatgpt"] = m.group(1).strip()
-                if "tiktok" in line_s.lower():
-                    m = re.search(r"TikTok[:：\s]+([^\n]+)", line_s, re.I)
+                if re.search(r"TikTok.*?[:：]", line_s, re.I):
+                    m = re.search(r"TikTok.*?[:：]\s*([^\n]+)", line_s, re.I)
                     if m: data["tiktok"] = m.group(1).strip()
 
         # 7. 解析第六章节：邮局与黑名单
@@ -402,6 +433,85 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
                     data["port25"] = m.group(1).strip()
                     break
 
+        # 8. 若存在原生导出的 JSON 数据，进行高精度覆盖与补全
+        if json_dict and isinstance(json_dict, dict):
+            head = json_dict.get("Head", {})
+            if head.get("IP") and str(head["IP"]) not in ["null", "None", ""]:
+                data["ip"] = str(head["IP"])
+
+            info = json_dict.get("Info", {})
+            if info.get("Type") and str(info["Type"]) not in ["null", "None", ""]:
+                data["ip_type"] = str(info["Type"])
+
+            type_sec = json_dict.get("Type", {})
+            usage = type_sec.get("Usage", {})
+            if isinstance(usage, dict):
+                home_hits = sum(1 for v in usage.values() if any(k in str(v) for k in ["家宽", "住宅", "Residential"]))
+                if home_hits > 0:
+                    data["residential_details"] = f"{home_hits}/{len(usage)} 数据库判定家宽"
+                    if "原生" in data["ip_type"] and "家宽" not in data["ip_type"]:
+                        data["ip_type"] = f"{data['ip_type']} (住宅家宽)"
+                    elif data["ip_type"] == "未知":
+                        data["ip_type"] = "住宅家宽 (Residential)"
+
+            score_sec = json_dict.get("Score", {})
+            if score_sec.get("SCAMALYTICS") and str(score_sec["SCAMALYTICS"]) != "null":
+                data["scamalytics_score"] = str(score_sec["SCAMALYTICS"])
+                data["scamalytics_level"] = "低风险" if data["scamalytics_score"] == "0" else ""
+            if score_sec.get("AbuseIPDB") and str(score_sec["AbuseIPDB"]) != "null":
+                data["abuseipdb_score"] = str(score_sec["AbuseIPDB"])
+                data["abuseipdb_level"] = "低风险" if data["abuseipdb_score"] in ["0", "0%"] else ""
+            if score_sec.get("IP2LOCATION") and str(score_sec["IP2LOCATION"]) != "null":
+                data["ip2location_score"] = str(score_sec["IP2LOCATION"])
+                data["ip2location_level"] = "低风险" if data["ip2location_score"] == "0" else ""
+            if score_sec.get("ipapi") and str(score_sec["ipapi"]) != "null":
+                data["ipapi_score"] = str(score_sec["ipapi"])
+                data["ipapi_level"] = "低风险"
+
+            media_sec = json_dict.get("Media", {})
+            if isinstance(media_sec, dict):
+                def parse_media_item(item_data):
+                    if not isinstance(item_data, dict):
+                        return ""
+                    st = str(item_data.get("Status", "")).replace("null", "").strip()
+                    rg = str(item_data.get("Region", "")).replace("null", "").strip()
+                    tp = str(item_data.get("Type", "")).replace("null", "").strip()
+                    if not st:
+                        return ""
+                    res = st
+                    if rg:
+                        res += f" [{rg}]"
+                    if tp:
+                        res += f" ({tp})"
+                    return res
+
+                item_map = {
+                    "netflix": parse_media_item(media_sec.get("Netflix", {})),
+                    "disney": parse_media_item(media_sec.get("DisneyPlus", {})),
+                    "youtube": parse_media_item(media_sec.get("Youtube", {})),
+                    "chatgpt": parse_media_item(media_sec.get("ChatGPT", {})),
+                    "tiktok": parse_media_item(media_sec.get("TikTok", {})),
+                    "amazon": parse_media_item(media_sec.get("AmazonPrimeVideo", {})),
+                    "reddit": parse_media_item(media_sec.get("Reddit", {})),
+                }
+                for k, v in item_map.items():
+                    if v:
+                        data[k] = v
+
+            mail_sec = json_dict.get("Mail", {})
+            if isinstance(mail_sec, dict):
+                p25 = mail_sec.get("Port25")
+                if p25 is True:
+                    data["port25"] = "可用"
+                elif p25 is False:
+                    data["port25"] = "阻断"
+                dnsbl = mail_sec.get("DNSBlacklist", {})
+                if isinstance(dnsbl, dict):
+                    clean_c = dnsbl.get("Clean", 0)
+                    black_c = dnsbl.get("Blacklisted", 0)
+                    if clean_c or black_c:
+                        data["blacklist_info"] = f"{clean_c} 正常 / {black_c} 黑名单"
+
         return data
 
     def _format_telegram_card(self, d: Dict[str, Any]) -> str:
@@ -417,7 +527,7 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
                 return "🟢"
             if any(k in t for k in ["仅app", "app", "自制", "only", "仅"]):
                 return "🟡"
-            if any(k in t for k in ["阻断", "不可达", "未解锁", "block", "fail", "no", "closed"]):
+            if any(k in t for k in ["阻断", "不可达", "未解锁", "block", "fail", "no", "closed", "屏蔽"]):
                 return "🔴"
             return "⚪"
 
@@ -454,21 +564,29 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
         elif "[SG]" in raw_loc or "新加坡" in raw_loc:
             loc_display = "🇸🇬 新加坡 (Singapore)"
 
-        # 风险评分排版
+        # 风险评分排版 (去除多余管道符与仪表盘残余)
         scam_s = d.get("scamalytics_score", "0")
-        scam_l = d.get("scamalytics_level", "低风险")
+        scam_l = re.sub(r"^[|\s]+", "", d.get("scamalytics_level", "")).strip(" |[]()")
+        if not scam_l or scam_l == "未知":
+            scam_l = "低风险" if scam_s == "0" else ""
         scam_display = f"{scam_s} ({scam_l})" if scam_l else scam_s
 
         abuse_s = d.get("abuseipdb_score", "0")
-        abuse_l = d.get("abuseipdb_level", "低风险")
+        abuse_l = re.sub(r"^[|\s]+", "", d.get("abuseipdb_level", "")).strip(" |[]()")
+        if not abuse_l or abuse_l == "未知":
+            abuse_l = "低风险" if abuse_s in ["0", "0%"] else ""
         abuse_display = f"{abuse_s} ({abuse_l})" if abuse_l else abuse_s
 
         ip2loc_s = d.get("ip2location_score", "0")
-        ip2loc_l = d.get("ip2location_level", "低风险")
+        ip2loc_l = re.sub(r"^[|\s]+", "", d.get("ip2location_level", "")).strip(" |[]()")
+        if not ip2loc_l or ip2loc_l == "未知":
+            ip2loc_l = "低风险" if ip2loc_s == "0" else ""
         ip2loc_display = f"{ip2loc_s} ({ip2loc_l})" if ip2loc_l else ip2loc_s
 
         ipapi_s = d.get("ipapi_score", "0%")
-        ipapi_l = d.get("ipapi_level", "低风险")
+        ipapi_l = re.sub(r"^[|\s]+", "", d.get("ipapi_level", "")).strip(" |[]()")
+        if not ipapi_l or ipapi_l == "未知":
+            ipapi_l = "低风险"
         ipapi_display = f"{ipapi_s} ({ipapi_l})" if ipapi_l else ipapi_s
 
         # 家宽属性补充
