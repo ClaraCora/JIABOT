@@ -6,7 +6,6 @@ import asyncio
 import logging
 import sys
 from config import settings
-from scheduler import scheduler
 
 
 def setup_logging():
@@ -60,17 +59,12 @@ def main():
 
     app = create_bot_application()
 
-    # 初始化定时调度器
-    scheduler.init_bot(app.bot)
-    scheduler.start()
-
     logger.info("🚀 Telegram Bot 已进入长轮询 (Polling) 监听模式...")
     try:
         app.run_polling(drop_pending_updates=True)
     except (KeyboardInterrupt, SystemExit):
         logger.info("收到退出信号，正在安全停止...")
     finally:
-        scheduler.shutdown()
         logger.info("机器人已安全退出。")
 
 
