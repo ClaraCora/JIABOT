@@ -318,3 +318,25 @@ async def test_boil_network_api_calls(monkeypatch):
     change_call_args, change_call_kwargs = mock_client.post.call_args
     assert change_call_args[0] == "https://ippanel.boil.network/api/v1/changeIP/"
     assert change_call_kwargs["headers"]["Authorization"] == f"Bearer {test_token}"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_cron_registration():
+    """测试定时任务在 09:00 与 21:00 的 CronTrigger 注册逻辑"""
+    from scheduler import TaskScheduler
+
+    ts = TaskScheduler()
+    ts.start()
+    try:
+        jobs = ts.scheduler.get_jobs()
+        job_ids = [j.id for j in jobs]
+        assert "scheduled_ipquality" in job_ids
+        assert "heartbeat_ip_check" in job_ids
+
+        ipquality_job = ts.scheduler.get_job("scheduled_ipquality")
+        assert ipquality_job is not None
+        trigger_str = str(ipquality_job.trigger)
+        assert "9,21" in trigger_str or ("9" in trigger_str and "21" in trigger_str)
+        assert "minute='0'" in trigger_str
+    finally:
+        ts.shutdown()

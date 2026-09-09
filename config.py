@@ -38,7 +38,9 @@ class Settings(BaseSettings):
     vps_query_ip_method: str = Field(default="POST", description="查询 IP API 方法 GET 或 POST", validation_alias="VPS_QUERY_IP_METHOD")
 
     # 4. xykt/IPQuality 脚本检测与调度配置
-    ipquality_cron_hours: int = Field(default=12, description="定时检测周期(小时)", validation_alias="IPQUALITY_CRON_HOURS")
+    ipquality_cron_times: str = Field(default="09:00,21:00", description="定时体检时间点列表，例如 09:00,21:00", validation_alias="IPQUALITY_CRON_TIMES")
+    timezone: str = Field(default="Asia/Shanghai", description="定时任务调度时区，例如 Asia/Shanghai", validation_alias="TIMEZONE")
+    ipquality_cron_hours: Optional[int] = Field(default=None, description="兼容旧版：定时检测周期(小时)", validation_alias="IPQUALITY_CRON_HOURS")
     auto_test_on_ip_change: bool = Field(default=True, description="换 IP 成功后是否自动体检", validation_alias="AUTO_TEST_ON_IP_CHANGE")
     ipquality_test_timeout: int = Field(default=300, description="IPQuality 执行超时秒数", validation_alias="IPQUALITY_TEST_TIMEOUT")
     ipquality_script_url: str = Field(default="https://IP.Check.Place", description="脚本 URL", validation_alias="IPQUALITY_SCRIPT_URL")

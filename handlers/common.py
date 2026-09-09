@@ -133,7 +133,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<b>防误触更换 IP 说明：</b>\n"
         f"点击“更换IP”后，机器人将弹出<b>二次确认菜单</b>，必须显式点击【⚠️ 确认更换】才会发起请求，有效避免日常误触中断业务。\n\n"
         f"<b>自动体检机制：</b>\n"
-        f"机器人内置定时器，每隔 {settings.ipquality_cron_hours} 小时全自动体检一次。若配置了换 IP 后自动体检，换 IP 完成后也会自动推送新 IP 质量。"
+        f"机器人内置定时巡检，每天在 {settings.ipquality_cron_times}（时区: {settings.timezone}）自动体检一次并推送报告。若配置了换 IP 后自动体检，换 IP 完成后也会自动推送新 IP 质量。"
     )
 
     if update.message:

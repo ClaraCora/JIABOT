@@ -22,7 +22,7 @@
   - **全维度解析**：自动解析 Scamalytics 欺诈分、AbuseIPDB 滥用率、原生家宽判定、流媒体解锁（Netflix、Disney+、YouTube Premium、TikTok、Amazon）与 ChatGPT 及 25 邮件端口。
   - **原始报告导出**：支持一键导出包含完整细节的 `.txt` 日志文件。
 - ⏰ **定时巡检与 IP 意外变动告警**：
-  - 支持自定义周期（默认每 12 小时）自动跑一次体检并推送结果。
+  - 支持自定义时间点（默认每天早 09:00 与晚 21:00）自动在后台跑一次体检并推送结果。
   - 心跳机制每 20 分钟检测一次公网 IP，若检测到运营商强制重拨引起的 IP 变动，自动告警并触发新 IP 测质。
 - 📱 **双重交互体验**：同时提供底部常驻快捷回复键盘（ReplyKeyboard）与现代化内联操作面板（InlineKeyboard）。
 
@@ -94,8 +94,9 @@ VPS_CHANGE_IP_URL=https://ippanel.boil.network/api/v1/changeIP/
 VPS_CHANGE_IP_METHOD=POST
 
 # 4. 定时检测与体检设置
-IPQUALITY_CRON_HOURS=12          # 定时体检周期(小时)
-AUTO_TEST_ON_IP_CHANGE=true      # 换 IP 成功后是否自动进行质量体检
+IPQUALITY_CRON_TIMES=09:00,21:00  # 定时体检时间点（每天早上9点与晚上21点）
+TIMEZONE=Asia/Shanghai            # 调度时区（默认 Asia/Shanghai）
+AUTO_TEST_ON_IP_CHANGE=true       # 换 IP 成功后是否自动进行质量体检
 ```
 
 ---

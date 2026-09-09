@@ -28,17 +28,58 @@ class TaskScheduler:
 
     def start(self):
         """配置并启动定时任务"""
-        # 1. 定时质量体检任务 (每 N 小时执行一次)
-        hours = max(1, settings.ipquality_cron_hours)
-        self.scheduler.add_job(
-            self._scheduled_quality_check,
-            "interval",
-            hours=hours,
-            id="scheduled_ipquality",
-            replace_existing=True,
-            misfire_grace_time=300,
-        )
-        logger.info(f"已注册定时 IPQuality 体检任务：每 {hours} 小时自动执行一次")
+        import zoneinfo
+        from apscheduler.triggers.cron import CronTrigger
+
+        # 解析调度时区 (默认 Asia/Shanghai)
+        tz_name = settings.timezone or "Asia/Shanghai"
+        try:
+            tz = zoneinfo.ZoneInfo(tz_name)
+        except Exception as e:
+            logger.warning(f"时区配置 {tz_name} 无效，使用系统本地时区: {e}")
+            tz = None
+
+        # 1. 注册定时质量体检任务 (默认每天 09:00 和 21:00)
+        cron_times_str = (settings.ipquality_cron_times or "09:00,21:00").strip()
+        time_points = []
+        for item in cron_times_str.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if ":" in item:
+                parts = item.split(":")
+                time_points.append((int(parts[0]), int(parts[1])))
+            elif item.isdigit():
+                time_points.append((int(item), 0))
+
+        if not time_points:
+            time_points = [(9, 0), (21, 0)]
+
+        # 如果分钟一致，合并为单一 cron job
+        distinct_minutes = {m for _, m in time_points}
+        if len(distinct_minutes) == 1:
+            hours_str = ",".join(str(h) for h, _ in time_points)
+            minute = time_points[0][1]
+            self.scheduler.add_job(
+                self._scheduled_quality_check,
+                CronTrigger(hour=hours_str, minute=minute, timezone=tz),
+                id="scheduled_ipquality",
+                replace_existing=True,
+                misfire_grace_time=600,
+            )
+            time_display = ", ".join(f"{h:02d}:{minute:02d}" for h, _ in time_points)
+            logger.info(f"已注册定时 IPQuality 体检任务：每天在 {time_display} 自动执行 (时区: {tz_name})")
+        else:
+            for idx, (h, m) in enumerate(time_points):
+                self.scheduler.add_job(
+                    self._scheduled_quality_check,
+                    CronTrigger(hour=h, minute=m, timezone=tz),
+                    id=f"scheduled_ipquality_{idx}",
+                    replace_existing=True,
+                    misfire_grace_time=600,
+                )
+            time_display = ", ".join(f"{h:02d}:{m:02d}" for h, m in time_points)
+            logger.info(f"已注册定时 IPQuality 体检任务：每天在 {time_display} 自动执行 (时区: {tz_name})")
 
         # 2. IP 意外变动探测任务 (每 20 分钟检测一次，检测家宽是否被运营商强制重拨换 IP)
         self.scheduler.add_job(
