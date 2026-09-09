@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  homebroadband-bot:
+    build: .
+    container_name: homebroadband-bot
+    restart: unless-stopped
+    # 必须使用 host 网络模式，以确保与 VPS 主机共享公网 IP 和网络栈
+    network_mode: "host"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data

@@ -1,0 +1,186 @@
+"""
+通用处理模块
+包含鉴权装饰器、常驻键盘定义、/start 与 /help 命令以及主菜单路由
+"""
+
+import functools
+import logging
+from typing import Callable
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    Update,
+)
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
+from config import settings
+from storage import storage
+
+logger = logging.getLogger(__name__)
+
+
+def authorized_only(func: Callable):
+    """权限校验装饰器：仅允许在 ALLOWED_USER_IDS 中的用户执行"""
+    @functools.wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user = update.effective_user
+        if not user:
+            return
+
+        user_id = user.id
+        if not settings.is_user_allowed(user_id):
+            logger.warning(f"未授权用户尝试访问: ID={user_id}, Name={user.full_name}, Username=@{user.username}")
+            msg = (
+                f"⛔ <b>访问受限 / Access Denied</b>\n\n"
+                f"您不在当前机器人的管理员授权白名单中。\n"
+                f"您的 Telegram User ID 为: <code>{user_id}</code>\n\n"
+                f"<i>请将此 ID 填入 VPS 机器人的 <code>ALLOWED_USER_IDS</code> 配置项后重试。</i>"
+            )
+            if update.callback_query:
+                await update.callback_query.answer("⛔ 权限不足", show_alert=True)
+                await update.callback_query.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            elif update.message:
+                await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            return
+
+        return await func(update, context, *args, **kwargs)
+
+    return wrapper
+
+
+def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
+    """构建底部常驻回复键盘，方便手机端直接点击常用功能"""
+    keyboard = [
+        ["🌐 当前IP", "🔄 更换IP"],
+        ["📊 质量报告", "⚡ 立即测质"],
+        ["📜 历史记录", "❓ 帮助说明"],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+
+def get_main_inline_keyboard() -> InlineKeyboardMarkup:
+    """构建内联控制面板按钮"""
+    buttons = [
+        [
+            InlineKeyboardButton("🌐 查询当前IP", callback_data="menu_ip"),
+            InlineKeyboardButton("🔄 更换 VPS IP", callback_data="menu_change_ip"),
+        ],
+        [
+            InlineKeyboardButton("📊 查看质量报告", callback_data="menu_quality"),
+            InlineKeyboardButton("⚡ 立即体检IP", callback_data="menu_test"),
+        ],
+        [
+            InlineKeyboardButton("📜 IP/检测历史", callback_data="menu_history"),
+            InlineKeyboardButton("❓ 帮助说明", callback_data="menu_help"),
+        ],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+@authorized_only
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """响应 /start 命令"""
+    user = update.effective_user
+    welcome_text = (
+        f"👋 您好，<b>{user.first_name}</b>！\n\n"
+        f"🤖 欢迎使用 <b>家宽 VPS 自动化运维机器人</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"本机器人已与您的 VPS 绑定，提供以下核心能力：\n\n"
+        f"• 🌐 <b>IP 查询</b>：实时获取公网 IPv4 及归属地运营商\n"
+        f"• 🔄 <b>更换 IP</b>：双重确认防误触更换 VPS 公网 IP\n"
+        f"• 📊 <b>质量体检</b>：查看由 <code>xykt/IPQuality</code> 测得的最新评分与解锁\n"
+        f"• ⚡ <b>实时体检</b>：一键在 VPS 后台运行脚本并推送卡片\n"
+        f"• ⏰ <b>定时巡检</b>：每 <b>{settings.ipquality_cron_hours}</b> 小时自动体检留存\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👇 请点击下方菜单或直接在键盘选择功能："
+    )
+
+    if update.message:
+        await update.message.reply_text(
+            welcome_text,
+            reply_markup=get_main_reply_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        # 附带一个内联面板
+        await update.message.reply_text(
+            "🕹️ <b>快捷主控面板：</b>",
+            reply_markup=get_main_inline_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(
+            welcome_text,
+            reply_markup=get_main_inline_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+
+
+@authorized_only
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """响应 /help 命令与帮助菜单"""
+    help_text = (
+        f"📖 <b>家宽 VPS 机器人指令与使用手册</b>\n\n"
+        f"<b>常用命令列表：</b>\n"
+        f"• /start - 唤出主控面板与常驻快捷键盘\n"
+        f"• /ip - 快速查询 VPS 当前公网 IPv4 与位置\n"
+        f"• /change_ip - 启动更换 IP 流程 (带二次确认)\n"
+        f"• /quality 或 /report - 查看最后一次留存的质量体检报告\n"
+        f"• /test - 立即执行 <code>xykt/IPQuality</code> 脚本体检\n"
+        f"• /history - 查看最近的 IP 变动与体检历史\n"
+        f"• /help - 查看本使用说明\n\n"
+        f"<b>防误触更换 IP 说明：</b>\n"
+        f"点击“更换IP”后，机器人将弹出<b>二次确认菜单</b>，必须显式点击【⚠️ 确认更换】才会发起请求，有效避免日常误触中断业务。\n\n"
+        f"<b>自动体检机制：</b>\n"
+        f"机器人内置定时器，每隔 {settings.ipquality_cron_hours} 小时全自动体检一次。若配置了换 IP 后自动体检，换 IP 完成后也会自动推送新 IP 质量。"
+    )
+
+    if update.message:
+        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    elif update.callback_query:
+        await update.callback_query.answer()
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 返回主菜单", callback_data="menu_start")]
+        ])
+        await update.callback_query.edit_message_text(
+            help_text,
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
+        )
+
+
+@authorized_only
+async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """响应 /history 命令，查看最近历史记录"""
+    recent = storage.get_recent_history(limit=8)
+    if not recent:
+        text = "📜 <b>历史记录</b>\n\n暂无历史记录，换 IP 或体检完成后将在此展示。"
+    else:
+        text = "📜 <b>最近 IP 更换与质量体检记录：</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        for idx, item in enumerate(recent, 1):
+            t = item.get("timestamp", "未知时间")
+            item_type = item.get("type", "unknown")
+            if item_type == "ip_change":
+                old_ip = item.get("old_ip", "未知")
+                new_ip = item.get("new_ip", "未知")
+                dur = item.get("duration_seconds", 0)
+                text += f"{idx}. 🔄 <b>IP更换:</b> <code>{old_ip}</code> ➔ <code>{new_ip}</code>\n   🕒 <i>{t}</i> (耗时 {dur}s)\n\n"
+            elif item_type == "quality_test":
+                ip = item.get("ip", "未知")
+                score = item.get("scamalytics_score", "N/A")
+                ip_type = item.get("ip_type", "未知")
+                dur = item.get("duration_seconds", 0)
+                text += f"{idx}. 📊 <b>质量体检:</b> <code>{ip}</code>\n   🏠 {ip_type} | 欺诈分: {score}\n   🕒 <i>{t}</i> (耗时 {dur}s)\n\n"
+            else:
+                text += f"{idx}. 记录: {t}\n\n"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 返回主菜单", callback_data="menu_start")]
+    ])
+
+    if update.message:
+        await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
