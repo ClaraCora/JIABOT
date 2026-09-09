@@ -592,9 +592,9 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
         # 家宽属性补充
         ip_type = d.get("ip_type", "未知")
         res_detail = d.get("residential_details", "")
-        type_line = f"• <b>IP 类型:</b> 🏠 <b>{ip_type}</b>"
+        type_line = f"• IP 类型: 🏠 {ip_type}"
         if res_detail:
-            type_line += f"\n• <b>家宽判定:</b> 🛡️ {res_detail}"
+            type_line += f"\n• 家宽判定: 🛡️ {res_detail}"
 
         # 流媒体列表构建
         media_items = [
@@ -615,37 +615,23 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
                 media_lines.append(f"• {name}: ⚪ 未知")
 
         media_text = "\n".join(media_lines)
-
-        # 端口与黑名单
-        port25 = d.get("port25", "未知")
-        port25_icon = media_status_icon(port25)
-        port25_line = f"• 25 端口出站: {port25_icon} {port25}"
-        if d.get("port25_detail"):
-            port25_line += f" ({d.get('port25_detail')})"
-
-        blacklist_info = d.get("blacklist_info", "")
-        blacklist_line = f"\n• 黑名单检测: {blacklist_info}" if blacklist_info != "未知" else ""
+        asn_org = f"{d.get('asn', '')} {d.get('org', '')}".strip() or "未知"
 
         card = (
-            f"📊 <b>IPv4 质量与解锁体检报告</b>\n"
-            f"🕒 <b>检测时间:</b> <code>{test_time}</code> (耗时 {duration}s)\n"
+            f"🕒 {test_time} (耗时 {duration}s)\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🌐 <b>网络基础信息:</b>\n"
-            f"• <b>公网 IPv4:</b> <code>{ip}</code>\n"
-            f"• <b>归属地区:</b> {loc_display}\n"
-            f"• <b>运营商/ASN:</b> {d.get('asn', '')} {d.get('org', '')}\n"
+            f"• 公网 IPv4: <code>{ip}</code>\n"
+            f"• 归属地区: {loc_display}\n"
+            f"• 运营商/ASN: {asn_org}\n"
             f"{type_line}\n\n"
             f"🛡️ <b>风控与欺诈评分:</b>\n"
-            f"• Scamalytics: {risk_status_icon(scam_s, scam_l)} <b>{scam_display}</b>\n"
-            f"• AbuseIPDB: {risk_status_icon(abuse_s, abuse_l)} <b>{abuse_display}</b>\n"
+            f"• Scamalytics: {risk_status_icon(scam_s, scam_l)} {scam_display}\n"
+            f"• AbuseIPDB: {risk_status_icon(abuse_s, abuse_l)} {abuse_display}\n"
             f"• IP2Location: {risk_status_icon(ip2loc_s, ip2loc_l)} {ip2loc_display}\n"
             f"• ipapi: {risk_status_icon(ipapi_s, ipapi_l)} {ipapi_display}\n\n"
             f"🎬 <b>流媒体与 AI 解锁:</b>\n"
-            f"{media_text}\n\n"
-            f"✉️ <b>服务端口与黑名单:</b>\n"
-            f"{port25_line}{blacklist_line}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💡 <i>数据源自 xykt/IPQuality 开源体检脚本</i>"
+            f"{media_text}"
         )
         return card
 
