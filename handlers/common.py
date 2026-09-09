@@ -16,6 +16,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 from config import settings
 from storage import storage
+from ipquality_runner import format_location_display, media_status_icon, risk_status_icon
 
 logger = logging.getLogger(__name__)
 
@@ -150,37 +151,157 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+HISTORY_PAGE_SIZE = 4
+
+
+def format_history_card(items: list, page: int, total_pages: int, total_count: int) -> str:
+    """格式化历史记录卡片，包含详细网络属性、风险评分与每一次完整的流媒体/AI解锁状态"""
+    if not items:
+        return "📜 <b>历史记录</b>\n\n暂无历史记录，换 IP 或体检完成后将在此展示。"
+
+    lines = [
+        f"📜 <b>最近 IP 变动与体检历史记录</b> (第 {page}/{total_pages} 页 · 共 {total_count} 条)",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    for idx, item in enumerate(items, 1):
+        global_idx = (page - 1) * HISTORY_PAGE_SIZE + idx
+        t = item.get("timestamp", "未知时间")
+        item_type = item.get("type", "unknown")
+
+        if item_type == "ip_change":
+            old_ip = item.get("old_ip", "未知")
+            new_ip = item.get("new_ip", "未知")
+            dur = item.get("duration_seconds", 0)
+            dur_text = f" (耗时 {dur}s)" if dur > 0 else " (自动监控)"
+            loc = format_location_display(item.get("location", ""))
+            loc_line = f"\n   🌐 地区: {loc}" if loc else ""
+            lines.append(
+                f"<b>{global_idx}. 🔄 IP 更换:</b>\n"
+                f"   • 链路: <code>{old_ip}</code> ➔ <code>{new_ip}</code>\n"
+                f"   • 时间: 🕒 <i>{t}</i>{dur_text}{loc_line}"
+            )
+
+        elif item_type == "quality_test":
+            ip = item.get("ip", "未知")
+            dur = item.get("duration_seconds", 0)
+            raw_loc = item.get("location", "")
+            loc = format_location_display(raw_loc)
+            loc_str = f" ({loc})" if loc else ""
+            ip_type = item.get("ip_type", "原生IP")
+            scam_s = item.get("scamalytics_score", "0")
+            scam_l = item.get("scamalytics_level", "低风险" if str(scam_s) in ["0", "0%"] else "")
+            scam_display = f"{scam_s} ({scam_l})" if scam_l else str(scam_s)
+            scam_icon = risk_status_icon(scam_s, scam_l)
+
+            # 流媒体与 AI 解锁列表
+            media_dict = item.get("media_unlock") or item.get("unlocks") or {}
+            media_services = [
+                ("Netflix", item.get("netflix") or media_dict.get("netflix") or media_dict.get("Netflix")),
+                ("Disney+", item.get("disney") or media_dict.get("disney+") or media_dict.get("disney") or media_dict.get("Disney+")),
+                ("YouTube", item.get("youtube") or media_dict.get("youtube") or media_dict.get("YouTube")),
+                ("ChatGPT", item.get("chatgpt") or media_dict.get("chatgpt") or media_dict.get("ChatGPT")),
+                ("TikTok", item.get("tiktok") or media_dict.get("tiktok") or media_dict.get("TikTok")),
+                ("AmazonPV", item.get("amazon") or media_dict.get("amazonpv") or media_dict.get("amazon") or media_dict.get("AmazonPV")),
+                ("Reddit", item.get("reddit") or media_dict.get("reddit") or media_dict.get("Reddit")),
+            ]
+
+            # 判断是否为新版记录（含有多个服务）
+            is_new_style = any(k in item for k in ["disney", "youtube", "tiktok", "amazon", "reddit"]) or bool(media_dict)
+
+            unlock_lines = []
+            for name, val in media_services:
+                if val and str(val).strip() and str(val).strip() != "未知":
+                    val_str = str(val).strip()
+                    icon = media_status_icon(val_str)
+                    icon_prefix = f"{icon} " if icon else ""
+                    unlock_lines.append(f"   • {name}: {icon_prefix}{val_str}")
+                elif is_new_style:
+                    unlock_lines.append(f"   • {name}: ⚪ 未知")
+
+            record_text = (
+                f"<b>{global_idx}. 📊 质量体检:</b> <code>{ip}</code>{loc_str}\n"
+                f"   🕒 <i>{t}</i> (耗时 {dur}s)\n"
+                f"   🏠 {ip_type} | 🛡️ 欺诈: {scam_icon} {scam_display}"
+            )
+
+            if unlock_lines:
+                record_text += "\n   🎬 <b>流媒体与 AI 解锁:</b>\n" + "\n".join(unlock_lines)
+            else:
+                record_text += "\n   🎬 <b>解锁状态:</b> ⚪ 暂无解锁数据"
+
+            lines.append(record_text)
+
+        else:
+            lines.append(f"<b>{global_idx}. 记录:</b> 🕒 <i>{t}</i>")
+
+        if idx < len(items):
+            lines.append("────────────────────")
+
+    return "\n".join(lines)
+
+
 @authorized_only
 async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """响应 /history 命令，查看最近历史记录"""
-    recent = storage.get_recent_history(limit=8)
-    if not recent:
-        text = "📜 <b>历史记录</b>\n\n暂无历史记录，换 IP 或体检完成后将在此展示。"
-    else:
-        text = "📜 <b>最近 IP 更换与质量体检记录：</b>\n━━━━━━━━━━━━━━━━━━━━\n"
-        for idx, item in enumerate(recent, 1):
-            t = item.get("timestamp", "未知时间")
-            item_type = item.get("type", "unknown")
-            if item_type == "ip_change":
-                old_ip = item.get("old_ip", "未知")
-                new_ip = item.get("new_ip", "未知")
-                dur = item.get("duration_seconds", 0)
-                text += f"{idx}. 🔄 <b>IP更换:</b> <code>{old_ip}</code> ➔ <code>{new_ip}</code>\n   🕒 <i>{t}</i> (耗时 {dur}s)\n\n"
-            elif item_type == "quality_test":
-                ip = item.get("ip", "未知")
-                score = item.get("scamalytics_score", "N/A")
-                ip_type = item.get("ip_type", "未知")
-                dur = item.get("duration_seconds", 0)
-                text += f"{idx}. 📊 <b>质量体检:</b> <code>{ip}</code>\n   🏠 {ip_type} | 欺诈分: {score}\n   🕒 <i>{t}</i> (耗时 {dur}s)\n\n"
-            else:
-                text += f"{idx}. 记录: {t}\n\n"
+    """响应 /history 命令与分页回调，查看历史记录"""
+    page = 1
+    if update.callback_query and update.callback_query.data:
+        data = update.callback_query.data
+        if data.startswith("history_page:"):
+            try:
+                page = int(data.split(":")[1])
+            except (IndexError, ValueError):
+                page = 1
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 返回主菜单", callback_data="menu_start")]
-    ])
+    all_history = storage.get_all_history()
+    total_count = len(all_history)
+    page_size = HISTORY_PAGE_SIZE
+    total_pages = max(1, (total_count + page_size - 1) // page_size) if total_count > 0 else 1
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    page_items = all_history[start_idx:end_idx]
+
+    text = format_history_card(page_items, page, total_pages, total_count)
+
+    keyboard_buttons = []
+    if total_pages > 1:
+        nav_row = []
+        if page > 1:
+            nav_row.append(InlineKeyboardButton("◀️ 上一页", callback_data=f"history_page:{page - 1}"))
+        nav_row.append(InlineKeyboardButton(f"{page} / {total_pages}", callback_data="noop"))
+        if page < total_pages:
+            nav_row.append(InlineKeyboardButton("下一页 ▶️", callback_data=f"history_page:{page + 1}"))
+        keyboard_buttons.append(nav_row)
+
+    action_row = [
+        InlineKeyboardButton("🔄 刷新", callback_data=f"history_page:{page}"),
+        InlineKeyboardButton("🔙 返回主菜单", callback_data="menu_start"),
+    ]
+    keyboard_buttons.append(action_row)
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
 
     if update.message:
         await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     elif update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+            await update.callback_query.answer()
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                await update.callback_query.answer("已是最新记录")
+            else:
+                logger.warning(f"更新历史记录消息失败: {e}")
+                await update.callback_query.answer()
+
+
+@authorized_only
+async def noop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """用于不可点击的占位按钮（如页码显示）"""
+    if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)

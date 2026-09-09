@@ -17,6 +17,7 @@ from config import settings
 from handlers.common import (
     help_handler,
     history_handler,
+    noop_handler,
     start_handler,
 )
 from handlers.ip_handler import (
@@ -117,6 +118,8 @@ def create_bot_application() -> Application:
     app.add_handler(CallbackQueryHandler(quality_report_handler, pattern="^menu_quality$"))
     app.add_handler(CallbackQueryHandler(quality_test_handler, pattern="^menu_test$"))
     app.add_handler(CallbackQueryHandler(history_handler, pattern="^menu_history$"))
+    app.add_handler(CallbackQueryHandler(history_handler, pattern=r"^history_page:\d+$"))
+    app.add_handler(CallbackQueryHandler(noop_handler, pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(help_handler, pattern="^menu_help$"))
     app.add_handler(CallbackQueryHandler(quality_export_raw_handler, pattern="^export_raw_quality$"))
 

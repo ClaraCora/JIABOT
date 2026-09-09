@@ -40,6 +40,58 @@ def clean_ansi(text: str) -> str:
     return "\n".join(result_lines)
 
 
+def format_location_display(raw_loc: str) -> str:
+    """格式化地理位置显示"""
+    if not raw_loc or raw_loc == "未知":
+        return ""
+    if "[HK]" in raw_loc or "香港" in raw_loc:
+        return "🇭🇰 香港 (Hong Kong)"
+    elif "[TW]" in raw_loc or "台湾" in raw_loc:
+        return "🇹🇼 台湾 (Taiwan)"
+    elif "[JP]" in raw_loc or "日本" in raw_loc:
+        return "🇯🇵 日本 (Japan)"
+    elif "[US]" in raw_loc or "美国" in raw_loc:
+        return "🇺🇸 美国 (United States)"
+    elif "[SG]" in raw_loc or "新加坡" in raw_loc:
+        return "🇸🇬 新加坡 (Singapore)"
+    return raw_loc.split(",")[0].strip()
+
+
+def media_status_icon(text: str) -> str:
+    """流媒体状态指示图标"""
+    t = str(text).lower()
+    if any(k in text for k in ["🟢", "🟡", "🔴", "⚪"]):
+        return ""
+    if any(k in t for k in ["解锁", "支持", "open", "开放", "yes"]):
+        return "🟢"
+    if any(k in t for k in ["仅app", "app", "自制", "only", "仅"]):
+        return "🟡"
+    if any(k in t for k in ["阻断", "不可达", "未解锁", "block", "fail", "no", "closed", "屏蔽"]):
+        return "🔴"
+    return "⚪"
+
+
+def risk_status_icon(score: str, level: str = "") -> str:
+    """风控评分风险级别图标"""
+    s = str(score).lower().replace("%", "")
+    lvl = str(level).lower()
+    try:
+        val = float(s)
+        if val == 0 or any(k in lvl for k in ["极低", "低", "clean", "low"]):
+            return "🟢"
+        if val <= 25 or "中" in lvl:
+            return "🟡"
+        return "🔴"
+    except ValueError:
+        if any(k in lvl for k in ["极低", "低", "clean", "low"]):
+            return "🟢"
+        if "中" in lvl:
+            return "🟡"
+        if "高" in lvl:
+            return "🔴"
+        return "🟢"
+
+
 class IPQualityRunner:
     def __init__(self):
         self._lock = asyncio.Lock()
@@ -94,16 +146,30 @@ class IPQualityRunner:
                 }
                 storage.save_latest_record(record)
 
-                # 记录简要历史
+                # 记录详细历史（包含所有解锁项）
+                loc_display = format_location_display(parsed_data.get("location", ""))
                 storage.add_history_entry({
                     "type": "quality_test",
                     "ip": parsed_data.get("ip", current_ip or "未知"),
-                    "scamalytics_score": parsed_data.get("scamalytics_score", "N/A"),
-                    "ip_type": parsed_data.get("ip_type", "未知"),
+                    "location": loc_display or parsed_data.get("location", "未知"),
+                    "asn": parsed_data.get("asn", ""),
+                    "org": parsed_data.get("org", "") or parsed_data.get("isp", ""),
+                    "scamalytics_score": parsed_data.get("scamalytics_score", "0"),
+                    "scamalytics_level": parsed_data.get("scamalytics_level", "低风险" if str(parsed_data.get("scamalytics_score")) == "0" else ""),
+                    "abuseipdb_score": parsed_data.get("abuseipdb_score", "0"),
+                    "abuseipdb_level": parsed_data.get("abuseipdb_level", ""),
+                    "ip_type": parsed_data.get("ip_type", "原生IP"),
+                    "residential_details": parsed_data.get("residential_details", ""),
                     "netflix": parsed_data.get("netflix", "未知"),
+                    "disney": parsed_data.get("disney", "未知"),
+                    "youtube": parsed_data.get("youtube", "未知"),
                     "chatgpt": parsed_data.get("chatgpt", "未知"),
+                    "tiktok": parsed_data.get("tiktok", "未知"),
+                    "amazon": parsed_data.get("amazon", "未知"),
+                    "reddit": parsed_data.get("reddit", "未知"),
                     "duration_seconds": elapsed_seconds,
                     "status": "success",
+                    "timestamp": parsed_data.get("test_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                 })
 
                 self.last_run_time = time.time()
@@ -520,49 +586,9 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
         test_time = d.get("test_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         duration = d.get("duration_seconds", 0)
 
-        # 状态指示符
-        def media_status_icon(text: str) -> str:
-            t = str(text).lower()
-            if any(k in t for k in ["解锁", "支持", "open", "开放", "yes"]):
-                return "🟢"
-            if any(k in t for k in ["仅app", "app", "自制", "only", "仅"]):
-                return "🟡"
-            if any(k in t for k in ["阻断", "不可达", "未解锁", "block", "fail", "no", "closed", "屏蔽"]):
-                return "🔴"
-            return "⚪"
-
-        def risk_status_icon(score: str, level: str = "") -> str:
-            s = str(score).lower().replace("%", "")
-            lvl = str(level).lower()
-            try:
-                val = float(s)
-                if val == 0 or any(k in lvl for k in ["极低", "低", "clean", "low"]):
-                    return "🟢"
-                if val <= 25 or "中" in lvl:
-                    return "🟡"
-                return "🔴"
-            except ValueError:
-                if any(k in lvl for k in ["极低", "低", "clean", "low"]):
-                    return "🟢"
-                if "中" in lvl:
-                    return "🟡"
-                if "高" in lvl:
-                    return "🔴"
-                return "🟢"
-
         # 地理位置排版增强
         raw_loc = d.get("location", "未知")
-        loc_display = raw_loc
-        if "[HK]" in raw_loc or "香港" in raw_loc:
-            loc_display = "🇭🇰 香港 (Hong Kong)"
-        elif "[TW]" in raw_loc or "台湾" in raw_loc:
-            loc_display = "🇹🇼 台湾 (Taiwan)"
-        elif "[JP]" in raw_loc or "日本" in raw_loc:
-            loc_display = "🇯🇵 日本 (Japan)"
-        elif "[US]" in raw_loc or "美国" in raw_loc:
-            loc_display = "🇺🇸 美国 (United States)"
-        elif "[SG]" in raw_loc or "新加坡" in raw_loc:
-            loc_display = "🇸🇬 新加坡 (Singapore)"
+        loc_display = format_location_display(raw_loc) or raw_loc
 
         # 风险评分排版 (去除多余管道符与仪表盘残余)
         scam_s = d.get("scamalytics_score", "0")

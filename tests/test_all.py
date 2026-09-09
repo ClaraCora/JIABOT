@@ -340,3 +340,104 @@ async def test_scheduler_cron_registration():
         assert "minute='0'" in trigger_str
     finally:
         ts.shutdown()
+
+
+def test_status_icons():
+    """测试流媒体与风险评分状态指示图标"""
+    from ipquality_runner import media_status_icon, risk_status_icon, format_location_display
+
+    assert media_status_icon("解锁 [HK] (原生)") == "🟢"
+    assert media_status_icon("仅APP [HK]") == "🟡"
+    assert media_status_icon("阻断") == "🔴"
+    assert media_status_icon("未知") == "⚪"
+    assert media_status_icon("🟢 已带图标") == ""
+
+    assert risk_status_icon("0", "低风险") == "🟢"
+    assert risk_status_icon("0%") == "🟢"
+    assert risk_status_icon("18%") == "🟡"
+    assert risk_status_icon("85", "高风险") == "🔴"
+
+    assert "香港" in format_location_display("[HK] 香港, [AS] 亚洲")
+    assert format_location_display("未知") == ""
+
+
+def test_history_formatting_and_unlocks():
+    """测试历史记录卡片格式化、解锁展示及分页"""
+    from handlers.common import format_history_card
+
+    # 1. 空记录
+    empty_res = format_history_card([], 1, 1, 0)
+    assert "暂无历史记录" in empty_res
+
+    # 2. IP 变更记录 + 完整解锁体检记录
+    sample_records = [
+        {
+            "type": "quality_test",
+            "ip": "203.218.34.193",
+            "location": "[HK] 香港",
+            "ip_type": "原生IP (住宅家宽)",
+            "scamalytics_score": "0",
+            "scamalytics_level": "低风险",
+            "netflix": "解锁 [HK] (原生)",
+            "disney": "解锁 [HK] (原生)",
+            "youtube": "解锁 [HK] (原生)",
+            "chatgpt": "仅APP [HK] (原生)",
+            "tiktok": "解锁 [ALISG] (原生)",
+            "amazon": "解锁 [HK] (原生)",
+            "reddit": "解锁 [HK] (原生)",
+            "duration_seconds": 39,
+            "timestamp": "2026-09-09 08:44:38",
+        },
+        {
+            "type": "ip_change",
+            "old_ip": "114.114.114.114",
+            "new_ip": "203.218.34.193",
+            "duration_seconds": 42,
+            "timestamp": "2026-09-09 08:40:00",
+        },
+    ]
+
+    res = format_history_card(sample_records, 1, 2, 6)
+    assert "第 1/2 页 · 共 6 条" in res
+    assert "203.218.34.193" in res
+    assert "114.114.114.114" in res
+    assert "原生IP (住宅家宽)" in res
+    assert "欺诈: 🟢 0 (低风险)" in res
+
+    # 验证流媒体与 AI 解锁全部展现
+    assert "Netflix: 🟢 解锁 [HK] (原生)" in res
+    assert "Disney+: 🟢 解锁 [HK] (原生)" in res
+    assert "YouTube: 🟢 解锁 [HK] (原生)" in res
+    assert "ChatGPT: 🟡 仅APP [HK] (原生)" in res
+    assert "TikTok: 🟢 解锁 [ALISG] (原生)" in res
+    assert "AmazonPV: 🟢 解锁 [HK] (原生)" in res
+    assert "Reddit: 🟢 解锁 [HK] (原生)" in res
+
+
+@pytest.mark.asyncio
+async def test_history_handler_callback(monkeypatch):
+    """测试历史记录分页与占位按钮的回调处理"""
+    from handlers.common import history_handler, noop_handler
+    from unittest.mock import AsyncMock, MagicMock
+    import config
+
+    monkeypatch.setattr(config.settings, "allowed_user_ids", {12345})
+
+    update = MagicMock()
+    update.effective_user.id = 12345
+    update.message = None
+    update.callback_query = MagicMock()
+    update.callback_query.data = "history_page:1"
+    update.callback_query.edit_message_text = AsyncMock()
+    update.callback_query.answer = AsyncMock()
+
+    context = MagicMock()
+    await history_handler(update, context)
+
+    update.callback_query.edit_message_text.assert_called_once()
+    update.callback_query.answer.assert_called_once()
+
+    # 测试 noop_handler
+    update.callback_query.answer.reset_mock()
+    await noop_handler(update, context)
+    update.callback_query.answer.assert_called_once()
