@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # 1. Telegram Bot 基本配置
     bot_token: str = Field(default="", description="Telegram Bot Token", validation_alias="BOT_TOKEN")
-    allowed_user_ids: Set[int] = Field(default_factory=set, description="允许使用的 Telegram 用户 ID 集合", validation_alias="ALLOWED_USER_IDS")
+    allowed_user_ids: Any = Field(default_factory=set, description="允许使用的 Telegram 用户 ID 集合", validation_alias="ALLOWED_USER_IDS")
 
     # 2. VPS 更换 IP 与 查询 IP 配置 (适配 boil.network 等家宽平台)
     vps_api_token: Optional[str] = Field(default=None, description="VPS API 统一 Token", validation_alias="VPS_API_TOKEN")
@@ -47,20 +47,26 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default=Path("./data"), description="数据存储路径", validation_alias="DATA_DIR")
     log_level: str = Field(default="INFO", description="日志等级", validation_alias="LOG_LEVEL")
 
-    @field_validator("allowed_user_ids", mode="before")
+    @field_validator("allowed_user_ids", mode="after")
     @classmethod
     def parse_allowed_user_ids(cls, v: Any) -> Set[int]:
-        if isinstance(v, set):
-            return {int(x) for x in v}
-        if isinstance(v, list):
-            return {int(x) for x in v}
+        if isinstance(v, (set, list)):
+            return {int(x) for x in v if str(x).lstrip("-").isdigit()}
+        if isinstance(v, int):
+            return {v}
         if isinstance(v, str):
-            res = set()
-            for part in v.split(","):
-                part = part.strip()
-                if part and part.isdigit():
-                    res.add(int(part))
-            return res
+            v = v.strip()
+            if not v:
+                return set()
+            # 兼容 JSON list 格式如 [123, 456]
+            if v.startswith("[") and v.endswith("]"):
+                try:
+                    arr = json.loads(v)
+                    return {int(x) for x in arr if str(x).lstrip("-").isdigit()}
+                except Exception:
+                    pass
+            # 兼容逗号分隔格式如 123456789, 987654321
+            return {int(x.strip()) for x in v.split(",") if x.strip().lstrip("-").isdigit()}
         return set()
 
     @field_validator("data_dir", mode="before")
