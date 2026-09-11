@@ -383,7 +383,7 @@ def test_history_formatting_and_unlocks():
             "youtube": "解锁 [HK] (原生)",
             "chatgpt": "仅APP [HK] (原生)",
             "tiktok": "解锁 [ALISG] (原生)",
-            "amazon": "解锁 [HK] (原生)",
+            "amazon": "解锁 [},Program:{dataType:a.MinervaValueDataType.STRING,val:o?] (原生)",
             "reddit": "解锁 [HK] (原生)",
             "duration_seconds": 39,
             "timestamp": "2026-09-09 08:44:38",
@@ -404,7 +404,8 @@ def test_history_formatting_and_unlocks():
     assert "原生IP (住宅家宽)" in res
     assert "欺诈: 🟢 0 (低风险)" in res
 
-    # 验证流媒体与 AI 解锁全部展现
+    # 验证流媒体与 AI 解锁全部展现，且异常乱码被自动清洗
+    assert "MinervaValueDataType" not in res
     assert "Netflix: 🟢 解锁 [HK] (原生)" in res
     assert "Disney+: 🟢 解锁 [HK] (原生)" in res
     assert "YouTube: 🟢 解锁 [HK] (原生)" in res

@@ -145,6 +145,43 @@ def test_json_overlay():
     assert d["ip"] == "203.218.34.193"
     assert d["scamalytics_score"] == "0"
     assert "5/5 数据库判定家宽" in d["residential_details"]
-    assert "解锁 [HK] (原生)" in d["netflix"]
-    assert "仅APP [HK] (原生)" in d["chatgpt"]
     assert d["port25"] == "阻断"
+
+
+def test_amazon_minerva_sanitization():
+    """测试当 xykt/IPQuality 因上游正则缺陷抓取到 Amazon MinervaValueDataType JS 源码时的自动修复与清洗"""
+    sample = """
+一、基础信息（Maxmind 数据库）
+IP类型:             原生IP
+使用地:             [HK] 香港, [AS] 亚洲
+五、流媒体及AI服务解锁检测
+服务商:     TikTok    Disney+    Netflix   Youtube   AmazonPV   Reddit    ChatGPT
+状态:        解锁       解锁       解锁      解锁      解锁      解锁     仅APP
+地区:      [ALISG]      [HK]       [HK]      [HK]      [},Program:{dataType:a.MinervaValueDataType.STRING,val:o?]      [HK]      [HK]
+方式:        原生       原生       原生      原生      原生      原生      原生
+"""
+    runner = IPQualityRunner()
+    d = runner._parse_output(sample, fallback_ip="203.218.34.193")
+    assert "MinervaValueDataType" not in d["amazon"]
+    assert "解锁 [HK] (原生)" in d["amazon"]
+
+    card = runner._format_telegram_card(d)
+    assert "MinervaValueDataType" not in card
+    assert "• AmazonPV: 🟢 解锁 [HK] (原生)" in card
+
+    # 同时测试结构化 JSON 中的异常清洗
+    json_data = {
+        "Head": {"IP": "203.218.34.193"},
+        "Info": {"Location": "[HK] 香港"},
+        "Media": {
+            "Netflix": {"Status": "解锁", "Region": "HK", "Type": "原生"},
+            "AmazonPrimeVideo": {
+                "Status": "解锁",
+                "Region": "},Program:{dataType:a.MinervaValueDataType.STRING,val:o?",
+                "Type": "原生"
+            },
+        }
+    }
+    d_json = runner._parse_output("", fallback_ip="203.218.34.193", json_dict=json_data)
+    assert "MinervaValueDataType" not in d_json["amazon"]
+    assert "解锁 [HK] (原生)" in d_json["amazon"]

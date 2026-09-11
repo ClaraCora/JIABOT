@@ -46,7 +46,10 @@ async def quality_report_handler(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text(empty_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         return
 
-    card_text = record["formatted_card"]
+    if record and "summary" in record and isinstance(record["summary"], dict):
+        card_text = ipquality_runner._format_telegram_card(record["summary"])
+    else:
+        card_text = record.get("formatted_card", "")
 
     keyboard = InlineKeyboardMarkup([
         [

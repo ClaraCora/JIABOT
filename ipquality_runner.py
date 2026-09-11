@@ -92,6 +92,111 @@ def risk_status_icon(score: str, level: str = "") -> str:
         return "🟢"
 
 
+def extract_fallback_region(data: Dict[str, Any], json_dict: Optional[Dict[str, Any]] = None) -> str:
+    """从节点基础信息（如 location: '[HK] 香港' 或已检测的其它主流流媒体地区、JSON 结构体）提取 2 位地区代码作为回退"""
+    if not isinstance(data, dict):
+        return ""
+
+    # 1. 如果有 country_code
+    if data.get("country_code"):
+        return str(data["country_code"]).upper()
+
+    # 2. 优先尝试从 location 提取 [XX]
+    loc = str(data.get("location", ""))
+    m = re.search(r"\[([A-Za-z]{2})\]", loc)
+    if m:
+        return m.group(1).upper()
+
+    # 3. 尝试从其它已解锁的主流流媒体中提取规范的 [XX]
+    for key in ["netflix", "youtube", "disney", "reddit"]:
+        val = str(data.get(key, ""))
+        m = re.search(r"\[([A-Za-z]{2,6})\]", val)
+        if m:
+            rg = m.group(1).upper()
+            if rg not in ["ALISG"]:
+                return rg
+
+    # 4. 如果传入了 json_dict，尝试从 json_dict 的 Info 或 Media 中提取
+    if json_dict and isinstance(json_dict, dict):
+        info_sec = json_dict.get("Info", {})
+        if isinstance(info_sec, dict):
+            reg = info_sec.get("Region", {})
+            if isinstance(reg, dict) and reg.get("Code"):
+                code = str(reg["Code"]).strip()
+                if 2 <= len(code) <= 3:
+                    return code.upper()
+            loc_val = str(info_sec.get("Location", ""))
+            m = re.search(r"\[([A-Za-z]{2})\]", loc_val)
+            if m:
+                return m.group(1).upper()
+        media_sec = json_dict.get("Media", {})
+        if isinstance(media_sec, dict):
+            for svc in ["Netflix", "Youtube", "DisneyPlus", "Reddit"]:
+                item = media_sec.get(svc, {})
+                if isinstance(item, dict):
+                    rg = str(item.get("Region", "")).strip("[]() ")
+                    if 2 <= len(rg) <= 4 and rg.isalpha() and rg.upper() != "ALISG":
+                        return rg.upper()
+
+    # 5. 常见地区中文与英文名称推断
+    loc_lower = loc.lower()
+    if "香港" in loc or "hong kong" in loc_lower:
+        return "HK"
+    if "台湾" in loc or "taiwan" in loc_lower:
+        return "TW"
+    if "日本" in loc or "japan" in loc_lower:
+        return "JP"
+    if "美国" in loc or "united states" in loc_lower or "america" in loc_lower:
+        return "US"
+    if "新加坡" in loc or "singapore" in loc_lower:
+        return "SG"
+
+    return ""
+
+
+def clean_media_region(raw_rg: str, fallback_rg: str = "") -> str:
+    """
+    校验并清洗流媒体地区代码。
+    若存在脚本上游正则缺陷抓取到的 JS 源码或乱码（如 MinervaValueDataType、含括号、冒号、长度异常等），
+    则剔除乱码并回退到合理的地区代码。
+    """
+    if not raw_rg:
+        return ""
+    rg = raw_rg.strip().strip("[]() ")
+
+    has_invalid_chars = bool(re.search(r"[{}\":;,?=\(\)\\\/\$\*\.]", rg))
+    is_suspicious = (
+        has_invalid_chars
+        or len(rg) > 7
+        or len(rg) < 2
+        or any(keyword in rg.lower() for keyword in ["minerva", "datatype", "program", "string", "null", "undefined", "unknown"])
+    )
+
+    if not is_suspicious:
+        return rg.upper()
+
+    if fallback_rg:
+        return fallback_rg.upper().strip("[]() ")
+
+    return ""
+
+
+def sanitize_media_display_val(val: str, fallback_rg: str = "") -> str:
+    """清洗流媒体完整显示文本，剔除可能内嵌的 JS 代码或异常地区乱码"""
+    if not val or val == "未知":
+        return val
+    if any(k in val for k in ["{", "}", "MinervaValueDataType", "dataType", "Program:"]):
+        st = "解锁" if any(k in val for k in ["解锁", "支持", "open", "开放", "yes"]) else ""
+        if not st:
+            st = "仅APP" if any(k in val for k in ["仅app", "app", "自制", "only", "仅"]) else "阻断"
+        tp = "原生" if "原生" in val else ("DNS" if "dns" in val.lower() else "")
+        rg_display = f"[{fallback_rg}]" if fallback_rg else ""
+        tp_display = f"({tp})" if tp else ""
+        parts = [p for p in [st, rg_display, tp_display] if p]
+        return " ".join(parts).strip()
+    return val
+
+
 class IPQualityRunner:
     def __init__(self):
         self._lock = asyncio.Lock()
@@ -437,11 +542,18 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
                     methods = re.split(r"(?:方式|Type)[:：]\s*", l, maxsplit=1)[1].strip().split()
 
         if services:
+            fallback_rg = extract_fallback_region(data)
             for i, svc_name in enumerate(services):
                 st = statuses[i] if i < len(statuses) else ""
                 rg = regions[i] if i < len(regions) else ""
                 mt = methods[i] if i < len(methods) else ""
-                display_str = f"{st} {rg} ({mt})".strip().replace("()", "").strip()
+
+                clean_rg = clean_media_region(rg, fallback_rg=fallback_rg)
+                rg_display = f"[{clean_rg}]" if clean_rg else ""
+                mt_display = f"({mt})" if mt else ""
+
+                parts = [p for p in [st, rg_display, mt_display] if p]
+                display_str = " ".join(parts).strip()
                 data["media_unlock"][svc_name.lower()] = display_str
 
                 k = svc_name.lower()
@@ -536,6 +648,7 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
 
             media_sec = json_dict.get("Media", {})
             if isinstance(media_sec, dict):
+                fallback_rg = extract_fallback_region(data, json_dict=json_dict)
                 def parse_media_item(item_data):
                     if not isinstance(item_data, dict):
                         return ""
@@ -544,9 +657,10 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
                     tp = str(item_data.get("Type", "")).replace("null", "").strip()
                     if not st:
                         return ""
+                    clean_rg = clean_media_region(rg, fallback_rg=fallback_rg)
                     res = st
-                    if rg:
-                        res += f" [{rg}]"
+                    if clean_rg:
+                        res += f" [{clean_rg}]"
                     if tp:
                         res += f" ({tp})"
                     return res
@@ -632,11 +746,13 @@ IP地址黑名单数据库:  有效 423   正常 416   已标记 6   黑名单 1
             ("AmazonPV", d.get("amazon", "未知")),
             ("Reddit", d.get("reddit", "未知")),
         ]
+        fallback_rg = extract_fallback_region(d)
         media_lines = []
         for name, val in media_items:
-            if val != "未知":
-                icon = media_status_icon(val)
-                media_lines.append(f"• {name}: {icon} {val}")
+            val_clean = sanitize_media_display_val(val, fallback_rg=fallback_rg)
+            if val_clean != "未知":
+                icon = media_status_icon(val_clean)
+                media_lines.append(f"• {name}: {icon} {val_clean}")
             else:
                 media_lines.append(f"• {name}: ⚪ 未知")
 

@@ -16,7 +16,13 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 from config import settings
 from storage import storage
-from ipquality_runner import format_location_display, media_status_icon, risk_status_icon
+from ipquality_runner import (
+    extract_fallback_region,
+    format_location_display,
+    media_status_icon,
+    risk_status_icon,
+    sanitize_media_display_val,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,9 +214,11 @@ def format_history_card(items: list, page: int, total_pages: int, total_count: i
 
             # 判断是否为新版记录（含有多个服务）
             is_new_style = any(k in item for k in ["disney", "youtube", "tiktok", "amazon", "reddit"]) or bool(media_dict)
+            fallback_rg = extract_fallback_region(item)
 
             unlock_lines = []
             for name, val in media_services:
+                val = sanitize_media_display_val(val, fallback_rg=fallback_rg)
                 if val and str(val).strip() and str(val).strip() != "未知":
                     val_str = str(val).strip()
                     icon = media_status_icon(val_str)
