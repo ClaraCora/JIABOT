@@ -12,6 +12,7 @@ import re
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
+import httpx
 from config import settings
 from storage import storage
 
@@ -197,6 +198,38 @@ def sanitize_media_display_val(val: str, fallback_rg: str = "") -> str:
     return val
 
 
+async def check_reddit_accessibility(timeout: float = 6.0) -> bool:
+    """
+    通过模拟标准现代浏览器真实指纹快速异步复验 Reddit 主站真实可达性。
+    针对 xykt/IPQuality 因使用 curl 请求 /svc/shreddit/reddit-chat 触发 WAF 403 导致的“假性屏蔽”进行真实性探测。
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get("https://www.reddit.com/", headers=headers)
+            if resp.status_code in [200, 301, 302, 304]:
+                return True
+    except Exception as e:
+        logger.debug(f"Reddit 真实连通性复核未通过: {e}")
+    return False
+
+
 class IPQualityRunner:
     def __init__(self):
         self._lock = asyncio.Lock()
@@ -233,6 +266,10 @@ class IPQualityRunner:
 
                 # 解析结构化信息 (结合文本解析与 JSON 结构化数据互补)
                 parsed_data = self._parse_output(clean_text, current_ip, json_dict=json_data)
+
+                # 智能复核纠偏：修复 Reddit 等因探针 403 导致的误报假性屏蔽
+                await self.auto_correct_reddit_status(parsed_data, json_dict=json_data)
+
                 parsed_data["duration_seconds"] = elapsed_seconds
                 parsed_data["test_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -291,6 +328,54 @@ class IPQualityRunner:
                 return False, err_msg, {}
             finally:
                 self.is_running = False
+
+    async def auto_correct_reddit_status(
+        self,
+        data: Dict[str, Any],
+        json_dict: Optional[Dict[str, Any]] = None,
+        force_probe: bool = False,
+    ) -> bool:
+        """
+        针对 Reddit 上游检测脚本误判（403 假性屏蔽）进行智能复核与自动纠偏。
+        如果脚本返回屏蔽/阻断/失败/未知，或者 force_probe=True，则进行真实连通性探测。
+        若探测成功，则自动修正为正常解锁状态。
+        返回: 是否进行了纠偏
+        """
+        current_reddit = str(data.get("reddit", "")).strip()
+
+        # 判断当前状态是否属于未解锁或疑似被误判（如“屏蔽”、“阻断”、“403”、“失败”、“未知”等）
+        is_suspicious_blocked = (
+            force_probe
+            or not current_reddit
+            or current_reddit == "未知"
+            or any(k in current_reddit.lower() for k in ["屏蔽", "阻断", "block", "fail", "no", "403", "不可达", "失败"])
+        )
+
+        # 如果本身已经正常解锁，无需再次探测纠偏
+        if not is_suspicious_blocked and any(k in current_reddit for k in ["解锁", "支持", "open", "yes"]):
+            return False
+
+        logger.info(f"检测到 Reddit 状态为 '{current_reddit}'，正在进行真实可用性异步复核...")
+        is_accessible = await check_reddit_accessibility()
+        if is_accessible:
+            fallback_rg = extract_fallback_region(data, json_dict=json_dict) or "HK"
+            # 探测当前节点的访问方式（若其它主流流媒体显示为 DNS 则标记为 DNS，否则默认为 原生）
+            method = "DNS" if "dns" in str(data.get("ip_type", "")).lower() else "原生"
+            for k in ["netflix", "disney", "youtube"]:
+                val_k = str(data.get(k, ""))
+                if "dns" in val_k.lower():
+                    method = "DNS"
+                    break
+
+            corrected_val = f"解锁 [{fallback_rg}] ({method})"
+            logger.info(f"Reddit 真实连通性复核通过！自动将 '{current_reddit}' 纠偏为 '{corrected_val}'")
+            data["reddit"] = corrected_val
+            if "media_unlock" in data and isinstance(data["media_unlock"], dict):
+                data["media_unlock"]["reddit"] = corrected_val
+            return True
+        else:
+            logger.info("Reddit 真实连通性复核确认不可达，维持原判定")
+            return False
 
     async def _run_linux_script(self) -> Tuple[str, Optional[Dict[str, Any]]]:
         """在 Linux VPS 上执行 xykt/IPQuality 脚本并读取结构化 JSON 输出"""

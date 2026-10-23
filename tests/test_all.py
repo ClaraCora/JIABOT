@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 import pytest
 from config import Settings
 from ipquality_runner import IPQualityRunner, clean_ansi
@@ -442,3 +443,105 @@ async def test_history_handler_callback(monkeypatch):
     update.callback_query.answer.reset_mock()
     await noop_handler(update, context)
     update.callback_query.answer.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reddit_auto_correction_success(monkeypatch):
+    """测试当上游脚本因 403 误判 Reddit 为屏蔽时，自动复核纠偏为正常解锁"""
+    from ipquality_runner import IPQualityRunner
+    import ipquality_runner
+
+    # 模拟真实连通性探测返回 True (可访问)
+    monkeypatch.setattr(ipquality_runner, "check_reddit_accessibility", AsyncMock(return_value=True))
+
+    runner = IPQualityRunner()
+    data = {
+        "ip": "203.218.34.193",
+        "location": "[HK] 香港",
+        "ip_type": "原生IP (住宅家宽)",
+        "netflix": "解锁 [HK] (原生)",
+        "reddit": "屏蔽",
+        "media_unlock": {"reddit": "屏蔽"},
+    }
+
+    corrected = await runner.auto_correct_reddit_status(data)
+    assert corrected is True
+    assert data["reddit"] == "解锁 [HK] (原生)"
+    assert data["media_unlock"]["reddit"] == "解锁 [HK] (原生)"
+
+    card = runner._format_telegram_card(data)
+    assert "• Reddit: 🟢 解锁 [HK] (原生)" in card
+
+
+@pytest.mark.asyncio
+async def test_reddit_auto_correction_failure(monkeypatch):
+    """测试当 Reddit 真实确系不可达时，维持屏蔽判定不被误修"""
+    from ipquality_runner import IPQualityRunner
+    import ipquality_runner
+
+    # 模拟真实连通性探测返回 False (真被阻断)
+    monkeypatch.setattr(ipquality_runner, "check_reddit_accessibility", AsyncMock(return_value=False))
+
+    runner = IPQualityRunner()
+    data = {
+        "ip": "203.218.34.193",
+        "location": "[HK] 香港",
+        "reddit": "阻断",
+        "media_unlock": {"reddit": "阻断"},
+    }
+
+    corrected = await runner.auto_correct_reddit_status(data)
+    assert corrected is False
+    assert data["reddit"] == "阻断"
+
+    card = runner._format_telegram_card(data)
+    assert "• Reddit: 🔴 阻断" in card
+
+
+@pytest.mark.asyncio
+async def test_reddit_already_unlocked_skips_probe(monkeypatch):
+    """测试当 Reddit 已是解锁状态时，跳过探测，不产生额外开销"""
+    from ipquality_runner import IPQualityRunner
+    import ipquality_runner
+
+    mock_probe = AsyncMock(return_value=True)
+    monkeypatch.setattr(ipquality_runner, "check_reddit_accessibility", mock_probe)
+
+    runner = IPQualityRunner()
+    data = {
+        "location": "[HK] 香港",
+        "reddit": "解锁 [HK] (原生)",
+    }
+
+    corrected = await runner.auto_correct_reddit_status(data)
+    assert corrected is False
+    assert mock_probe.called is False
+    assert data["reddit"] == "解锁 [HK] (原生)"
+
+
+@pytest.mark.asyncio
+async def test_run_check_with_reddit_correction(monkeypatch):
+    """测试在完整 run_check 流程中，即使脚本输出 Reddit 屏蔽，也能被自动纠偏为解锁"""
+    from ipquality_runner import IPQualityRunner
+    import ipquality_runner
+
+    sample_output_with_block = """
+########################################################################
+                         IP质量体检报告: 203.218.34.193
+五、流媒体及AI服务解锁检测
+服务商:     TikTok    Disney+    Netflix   Youtube   AmazonPV   Reddit    ChatGPT
+状态:        解锁       解锁       解锁      解锁      解锁      屏蔽     仅APP
+地区:      [ALISG]      [HK]       [HK]      [HK]      [HK]      [HK]      [HK]
+方式:        原生       原生       原生      原生      原生      原生      原生
+########################################################################
+"""
+    runner = IPQualityRunner()
+    monkeypatch.setattr(runner, "_run_mock_windows", AsyncMock(return_value=sample_output_with_block))
+    monkeypatch.setattr(ipquality_runner, "check_reddit_accessibility", AsyncMock(return_value=True))
+
+    ok, card, record = await runner.run_check(current_ip="203.218.34.193")
+    assert ok is True
+    assert "• Reddit: 🟢 解锁 [HK] (原生)" in card
+    assert record["summary"]["reddit"] == "解锁 [HK] (原生)"
+
+
